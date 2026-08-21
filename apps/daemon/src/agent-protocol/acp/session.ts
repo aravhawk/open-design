@@ -58,7 +58,12 @@ import {
   currentModelFromSessionResult,
   modelSelectionErrorIsRecoverable,
 } from './models.js';
-import { buildAcpSessionNewParams, buildPromptBlocks, type AcpMcpServerInput } from './session-params.js';
+import {
+  buildAcpSessionLoadParams,
+  buildAcpSessionNewParams,
+  buildPromptBlocks,
+  type AcpMcpServerInput,
+} from './session-params.js';
 
 /**
  * Options for `attachAcpSession`. All fields except `child`, `prompt`, and
@@ -70,6 +75,7 @@ export interface AttachAcpSessionOptions {
   cwd?: string;
   model?: string | null;
   imagePaths?: string[];
+  imagePathFormat?: 'path' | 'file-url';
   mcpServers?: AcpMcpServerInput[];
   // Passed through to buildAcpSessionNewParams — see AcpSessionOptions.
   envFormat?: 'array' | 'map';
@@ -89,6 +95,10 @@ export interface AttachAcpSessionOptions {
   // `session/new`. The agent verifies the session and, if it is gone, returns a
   // structured `resume_failed` error the caller maps to its reseed path.
   resumeSessionId?: string | null;
+  // The standard ACP session id is durable for agents such as Kilo. Bridges
+  // such as AMR expose a process-local session id and a separate
+  // `openCodeSessionId`, so this fallback must be explicitly enabled.
+  captureSessionIdAsDurable?: boolean;
   // Subsegment timing markers for spawn->first-token attribution (#3408 §4).
   // `onCliReady` fires once on the first well-formed ACP JSON-RPC message
   // (the CLI is up and speaking the protocol); `onSessionInit` fires once when
@@ -130,6 +140,7 @@ export function attachAcpSession({
   cwd,
   model,
   imagePaths = [],
+  imagePathFormat = 'path',
   mcpServers,
   envFormat = 'array',
   send,
@@ -140,6 +151,7 @@ export function attachAcpSession({
   modelUnavailableErrorCode,
   completePromptOnTurnEnd = false,
   resumeSessionId,
+  captureSessionIdAsDurable = false,
   onCliReady,
   onSessionInit,
   onPromptComplete,
@@ -566,7 +578,7 @@ export function attachAcpSession({
       'session/prompt',
       {
         sessionId,
-        prompt: buildPromptBlocks(prompt, imagePaths),
+        prompt: buildPromptBlocks(prompt, imagePaths, { imagePathFormat }),
       },
       'session/prompt',
     );
@@ -918,7 +930,11 @@ export function attachAcpSession({
         writeRpc(
           nextId,
           'session/load',
-          { sessionId: resumeSessionId, cwd: effectiveCwd },
+          buildAcpSessionLoadParams(
+            resumeSessionId,
+            effectiveCwd,
+            mcpServers ? { mcpServers, envFormat } : { envFormat },
+          ),
           'session/load',
         );
       } else {
@@ -936,10 +952,20 @@ export function attachAcpSession({
       return;
     }
     if (expectedId === 2) {
-      sessionId = typeof result.sessionId === 'string' ? result.sessionId : null;
+      // ACP session/load responses do not repeat the already-known session id.
+      // Preserve the requested id on resume while still requiring session/new
+      // to mint and return one on a create turn.
+      sessionId =
+        typeof result.sessionId === 'string'
+          ? result.sessionId
+          : resumeSessionId || null;
       // The durable handle for resuming this session on the next turn.
       durableSessionId =
-        typeof result.openCodeSessionId === 'string' ? result.openCodeSessionId : null;
+        typeof result.openCodeSessionId === 'string'
+          ? result.openCodeSessionId
+          : captureSessionIdAsDurable
+            ? sessionId
+            : null;
       // session/new acknowledged with a session id = handshake done (#3408 §4).
       if (sessionId) onSessionInit?.();
       const modelConfig = findModelConfigOption(result.configOptions);

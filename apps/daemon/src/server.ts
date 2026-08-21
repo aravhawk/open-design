@@ -13249,6 +13249,7 @@ export async function startServer({
         cwd: effectiveCwd,
         model: safeModel,
         imagePaths: def.supportsImagePaths ? amrStagedImages : [],
+        imagePathFormat: def.acpImagePathFormat ?? 'path',
         mcpServers,
         envFormat: def.acpMcpEnvFormat ?? 'array',
         executionProfile,
@@ -13259,6 +13260,7 @@ export async function startServer({
         ...(def.resumesSessionViaAcpLoad === true && agentResumePromptPolicy.resumeSessionId
           ? { resumeSessionId: agentResumePromptPolicy.resumeSessionId }
           : {}),
+        captureSessionIdAsDurable: def.acpSessionIdIsDurable === true,
         onCliReady: () => noteCliReadyAt(),
         onSessionInit: () => noteSessionInitDoneAt(),
         onPromptComplete: () => clearFirstOutputWatchdog(),
