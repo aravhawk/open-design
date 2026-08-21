@@ -35,4 +35,5 @@ export const kiloAgentDef = {
     acpImagePathFormat: 'file-url',
     mcpDiscovery: 'mature-acp',
     externalMcpInjection: 'acp-merge',
+    acpMcpEnvFormat: 'array',
 } satisfies RuntimeAgentDef;

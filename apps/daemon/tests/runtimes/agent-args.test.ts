@@ -769,6 +769,7 @@ test('Kilo Code CLI declares its complete ACP integration contract', () => {
   assert.equal(kilo.acpImagePathFormat, 'file-url');
   assert.equal(kilo.mcpDiscovery, 'mature-acp');
   assert.equal(kilo.externalMcpInjection, 'acp-merge');
+  assert.equal(kilo.acpMcpEnvFormat, 'array');
 });
 
 test('Kilo Code CLI install metadata points to the current official docs', () => {

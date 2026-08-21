@@ -317,18 +317,21 @@ the active-run staging implementation is in
 
 ### 5.10 Kilo Code CLI
 
-- Install Kilo 1.0 or newer with `npm install -g @kilocode/cli`; the package
+- Install Kilo 7.0.30 or newer with `npm install -g @kilocode/cli`; 7.0.30 is
+  the earliest release independently listed in the official ACP registry. The package
   supports macOS, Linux, and Windows on x64 and arm64 and installs both `kilo`
   and `kilocode` command aliases. OpenDesign prefers `kilo` and detects
   `kilocode` as a compatible fallback. On older x64 CPUs without AVX support,
   use Kilo's platform-specific `-baseline` release archive instead of the
   default binary.
 - Invocation is `kilo acp`, using Kilo's native ACP v1 JSON-RPC server. This
-  was validated against Kilo `7.4.23` and the upstream implementation at
-  `Kilo-Org/kilocode@097a922ec9cb9ff297e4acbe787b4e3398a188ad`.
+  was validated against Kilo `7.4.23` and its tagged upstream implementation at
+  `Kilo-Org/kilocode@40fa10e50a75c4887978d892520d1246515413bf`.
   OpenDesign auto-approves ordinary ACP permission requests so a headless run
   does not stall on Kilo's interactive approval UI; Kilo still enforces its
   own explicit deny rules and protected skill/sandbox escalation policy.
+  Kilo completes the turn with the `session/prompt` response, so the adapter
+  deliberately does not opt into Kiro's `turn_end` compatibility behavior.
 - Models come from the ACP `session/new` `model` config option, which exposes
   the providers available to that Kilo installation. An explicit Settings
   selection is sent with `session/set_config_option`; **Default** leaves Kilo's
