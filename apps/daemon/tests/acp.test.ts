@@ -3877,6 +3877,116 @@ test('attachAcpSession marks OpenCode upstream idle session errors retryable', (
   assert.deepEqual(payload.error?.details, details);
 });
 
+function writeAcpLoadedHistory(child: FakeAcpChild): void {
+  for (const update of [
+    { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'Previous request' } },
+    { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Previous answer' } },
+    { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Previous reasoning' } },
+    { sessionUpdate: 'tool_call', toolCallId: 'reused-tool', kind: 'edit', title: 'Write', status: 'pending', rawInput: { file_path: 'old.html' } },
+    { sessionUpdate: 'tool_call_update', toolCallId: 'reused-tool', status: 'completed', rawOutput: 'Previous write' },
+    { sessionUpdate: 'tool_call', toolCallId: 'historical-open-tool', kind: 'read', title: 'Read', status: 'pending' },
+    { sessionUpdate: 'plan', entries: [{ content: 'Previous plan', status: 'completed', priority: 'medium' }] },
+    { sessionUpdate: 'turn_end' },
+  ]) writeAcpUpdate(child, update);
+}
+
+test('attachAcpSession drops load history until the resumed prompt, preserving control messages and new output', () => {
+  const child = new FakeAcpChild();
+  const events: Array<{ event: string; payload: any }> = [];
+  const writes: string[] = [];
+  const onSessionInit = vi.fn();
+  child.stdin.on('data', (chunk) => writes.push(String(chunk)));
+  const session = attachAcpSession({
+    child: child as never, prompt: 'continue', cwd: '/tmp/od-project', model: 'selected-model',
+    resumeSessionId: 'ses_kilo_persisted', captureSessionIdAsDurable: true,
+    completePromptOnTurnEnd: true, stageTimeoutMs: 0, onSessionInit, onTerminal: () => {},
+    send: (event, payload) => events.push({ event, payload }),
+  });
+  writeAcpResult(child, 1, {});
+  const beforeHistory = events.length;
+  writeAcpLoadedHistory(child);
+  assert.equal(events.length, beforeHistory, 'loaded transcript must not emit run events');
+  assert.equal(onSessionInit.mock.calls.length, 0);
+  writeAcpUpdate(child, { sessionUpdate: 'current_mode_update', currentModeId: 'code' });
+  assert.ok(events.some((entry) => entry.payload.label === 'current_mode_update'));
+  child.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: 90, method: 'session/request_permission', params: {
+    options: [{ optionId: 'allow-once', kind: 'allow_once' }],
+  } })}\n`);
+  assert.deepEqual(JSON.parse(writes.at(-1)!).result, { outcome: { outcome: 'selected', optionId: 'allow-once' } });
+  writeAcpResult(child, 2, { configOptions: [{
+    id: 'model', type: 'select', category: 'model', currentValue: 'selected-model',
+    options: [{ value: 'selected-model', name: 'Selected' }],
+  }] });
+  assert.equal(onSessionInit.mock.calls.length, 1);
+  assert.equal(parseRpcWrites(writes).some((entry) => entry.method === 'session/prompt'), false);
+  const beforeModelSelection = events.length;
+  writeAcpLoadedHistory(child);
+  assert.equal(events.length, beforeModelSelection, 'history stays suppressed while model selection is pending');
+  writeAcpResult(child, 3, {});
+  assert.ok(parseRpcWrites(writes).some((entry) => entry.method === 'session/prompt'));
+  writeAcpUpdate(child, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Previous answer with new work' } });
+  writeAcpUpdate(child, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'New reasoning' } });
+  writeAcpUpdate(child, { sessionUpdate: 'tool_call', toolCallId: 'reused-tool', kind: 'read', title: 'Read', status: 'pending', rawInput: { file_path: 'current.txt' } });
+  writeAcpUpdate(child, { sessionUpdate: 'tool_call_update', toolCallId: 'reused-tool', status: 'completed', rawOutput: 'Current read' });
+  writeAcpResult(child, 4, {});
+  assert.deepEqual(events.filter((entry) => entry.payload.type === 'text_delta').map((entry) => entry.payload.delta), ['Previous answer with new work']);
+  assert.deepEqual(events.filter((entry) => entry.payload.type === 'thinking_delta').map((entry) => entry.payload.delta), ['New reasoning']);
+  assert.deepEqual(events.filter((entry) => entry.payload.type === 'tool_use').map((entry) => entry.payload.name), ['Read']);
+  assert.equal(events.some((entry) => entry.payload.type === 'artifact'), false);
+  assert.equal(session.completedSuccessfully(), true);
+});
+
+test.each(['load error', 'child exit', 'abort', 'timeout'] as const)('load history cannot leak or flush historical tools on %s before prompt', async (ending) => {
+  vi.useFakeTimers();
+  try {
+    const child = new FakeAcpChild();
+    const events: Array<{ event: string; payload: any }> = [];
+    const writes: string[] = [];
+    child.stdin.on('data', (chunk) => writes.push(String(chunk)));
+    const session = attachAcpSession({
+      child: child as never, prompt: 'continue', resumeSessionId: 'ses_kilo_persisted',
+      captureSessionIdAsDurable: true, stageTimeoutMs: 20, onTerminal: () => {},
+      send: (event, payload) => events.push({ event, payload }),
+    });
+    writeAcpResult(child, 1, {});
+    writeAcpLoadedHistory(child);
+    if (ending === 'load error') writeAcpError(child, 2, { code: -32603, message: 'Missing session', data: { service: 'session' } });
+    else if (ending === 'child exit') child.emit('close', 1, null);
+    else if (ending === 'abort') session.abort();
+    else await vi.advanceTimersByTimeAsync(21);
+    writeAcpLoadedHistory(child);
+    writeAcpResult(child, 2, { configOptions: [] });
+    assert.equal(parseRpcWrites(writes).some((entry) => entry.method === 'session/prompt'), false);
+    assert.equal(events.some((entry) => ['text_delta', 'thinking_delta', 'tool_use', 'tool_result', 'artifact'].includes(entry.payload.type)), false);
+    assert.equal(events.filter((entry) => entry.event === 'error').length, ending === 'abort' ? 0 : 1);
+    if (ending === 'load error') assert.deepEqual(events.find((entry) => entry.event === 'error')?.payload.error.details, { service: 'session' });
+    assert.equal(session.completedSuccessfully(), false);
+    assert.equal(session.hasFatalError(), ending !== 'abort');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test.each(['prompt error', 'abort'] as const)('load history is excluded while current tools still flush on %s', (ending) => {
+  const child = new FakeAcpChild();
+  const events: Array<{ event: string; payload: any }> = [];
+  const session = attachAcpSession({
+    child: child as never, prompt: 'continue', resumeSessionId: 'ses_kilo_persisted',
+    captureSessionIdAsDurable: true, stageTimeoutMs: 0, onTerminal: () => {},
+    send: (event, payload) => events.push({ event, payload }),
+  });
+  writeAcpResult(child, 1, {});
+  writeAcpLoadedHistory(child);
+  writeAcpResult(child, 2, { configOptions: [] });
+  writeAcpUpdate(child, { sessionUpdate: 'tool_call', toolCallId: 'current-read', kind: 'read', title: 'Read', status: 'pending' });
+  if (ending === 'prompt error') writeAcpError(child, 3, { code: -32000, message: 'Provider unavailable' });
+  else session.abort();
+  assert.deepEqual(events.filter((entry) => entry.payload.type === 'tool_use').map((entry) => entry.payload.id), [acpTelemetryToolCallId('current-read')]);
+  assert.deepEqual(events.filter((entry) => entry.payload.type === 'tool_result').map((entry) => entry.payload.isError), [true]);
+  assert.equal(events.some((entry) => entry.payload.type === 'text_delta'), false);
+  assert.equal(session.completedSuccessfully(), false);
+});
+
 test('attachAcpSession resumes via session/load when resumeSessionId is set', () => {
   const child = new FakeAcpChild();
   const writes: string[] = [];

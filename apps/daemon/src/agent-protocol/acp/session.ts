@@ -92,6 +92,16 @@ const NON_DISPLAYABLE_ACP_SESSION_UPDATES = new Set([
   'available_commands_update',
 ]);
 
+const ACP_TRANSCRIPT_SESSION_UPDATES = new Set([
+  'user_message_chunk',
+  'agent_message_chunk',
+  'agent_thought_chunk',
+  'tool_call',
+  'tool_call_update',
+  'plan',
+  'turn_end',
+]);
+
 /**
  * Out-of-band provenance for a single `send` from this bridge.
  *
@@ -1103,6 +1113,15 @@ export function attachAcpSession({
     }
     const update = asObject(params?.update);
     if (obj.method === 'session/update' && update) {
+      // session/load replays the persisted transcript before its response.
+      // Keep it out of this turn's output, tool state, and artifact detection
+      // until the new prompt is sent, including any intervening model setup.
+      // Handshake responses, permission requests, and control updates still flow.
+      if (resumeSessionId && promptRequestId === null &&
+          typeof update.sessionUpdate === 'string' &&
+          ACP_TRANSCRIPT_SESSION_UPDATES.has(update.sessionUpdate)) {
+        return;
+      }
       if (modelUnavailableErrorCode) {
         const promotedPayload = promotedAmrRetryStatusPayload(update);
         if (promotedPayload) {

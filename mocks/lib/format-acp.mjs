@@ -17,10 +17,8 @@
 // Verified against the spec implementation at
 //   apps/daemon/src/acp.ts (attachAcpSession + ACP_PROTOCOL_VERSION).
 //
-// Tool events from the recording are dropped — OD's ACP parser only
-// recognizes thought_chunk + message_chunk. Tool-use surfaces in the
-// real ACP agents (Hermes/Kimi/Kilo/Kiro/Vibe/Devin) come through
-// MCP or other side channels, not the stdio protocol.
+// Prompt replay emits the recording's final text. Kilo session/load also
+// replays historical text and tools before returning, matching its ACP flow.
 
 import { writeFile } from 'node:fs/promises';
 
@@ -135,6 +133,31 @@ export async function runAcpServer(events, opts = {}) {
     if (method === 'session/load') {
       if (typeof obj.params?.sessionId === 'string' && obj.params.sessionId) {
         sessionId = obj.params.sessionId;
+      }
+      if (opts.replayHistoryOnLoad) {
+        // Kilo publishes persisted messages/tools before the load response;
+        // the daemon must not attribute them to the prompt it has yet to send.
+        for (const [index, event] of events.entries()) {
+          const publish = update => writeLine({
+            jsonrpc: '2.0', method: 'session/update', params: { sessionId, update },
+          });
+          if (event.type === 'tool_call') {
+            const toolCallId = event.obs_id ?? `mock-history-tool-${index}`;
+            publish({
+              sessionUpdate: 'tool_call', toolCallId, title: event.name,
+              status: 'pending', rawInput: event.input,
+            });
+            const result = events.find(candidate => candidate.type === 'tool_result' && candidate.obs_id === event.obs_id);
+            if (result) publish({
+              sessionUpdate: 'tool_call_update', toolCallId,
+              status: result.status === 'error' ? 'failed' : 'completed', rawOutput: result.output,
+            });
+          } else if (event.type === 'report') {
+            for (const text of chunkText(event.content ?? '', 400)) publish({
+              sessionUpdate: 'agent_message_chunk', content: { type: 'text', text },
+            });
+          }
+        }
       }
       // Match Kilo: a successful load does not repeat the already-known id.
       writeRpcResult(out, id, { configOptions: [] });
