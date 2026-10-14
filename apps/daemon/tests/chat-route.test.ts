@@ -1223,6 +1223,33 @@ process.exit(1);
     );
   });
 
+  it('rejects oversized converted Kilo web-chat images before ACP launch', async () => {
+    if (!process.env.OD_DATA_DIR) throw new Error('OD_DATA_DIR is required for image attachment tests');
+    const projectId = `kilo-image-cap-${randomUUID()}`;
+    const created = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: projectId, name: 'Kilo image cap fixture' }),
+    });
+    expect(created.ok).toBe(true);
+    const projectDir = resolve(process.env.OD_DATA_DIR, 'projects', projectId);
+    await fsp.mkdir(projectDir, { recursive: true });
+    await fsp.writeFile(join(projectDir, 'large.png'), Buffer.alloc(1024 * 1024 + 1));
+    await withFakeAgent('kilo', `
+if (process.argv.includes('--version')) { console.log('7.4.23'); process.exit(0); }
+console.error('UNEXPECTED_KILO_LAUNCH'); process.exit(1);
+`, async () => {
+      const response = await fetch(`${baseUrl}/api/chat`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: 'kilo', projectId, message: 'Inspect the image', attachments: ['large.png'] }),
+      });
+      const body = await response.text();
+      expect(response.ok).toBe(true);
+      expect(body).toContain('BAD_REQUEST');
+      expect(body).toContain('Image attachments must be 1 MB or smaller.');
+      expect(body).not.toContain('UNEXPECTED_KILO_LAUNCH');
+    });
+  });
+
   it('rejects a requested media-only model before AMR ACP launch', async () => {
     const { body, invocations, responseOk } = await runAmrModelRequest('nano-banana-2');
 

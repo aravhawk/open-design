@@ -1010,6 +1010,8 @@ export function excludeAcpImagePathsAlreadyDeliveredAsResources(
 export interface WebChatAcpAttachmentTransport {
   imagePaths: string[];
   resourcePaths: string[];
+  oversizedImages: Array<{ path: string; sizeBytes: number }>;
+  failedImages: Array<{ path: string; error: string }>;
 }
 
 /**
@@ -1029,14 +1031,15 @@ export function resolveWebChatAttachmentsForAcp(
     mimePolicy?: AcpResourceMimePolicy;
     pathImpl?: typeof path;
     existsSync?: (path: string) => boolean;
+    statSync?: (path: string) => { isFile(): boolean; size?: number };
   } = {},
 ): WebChatAcpAttachmentTransport {
   if (opts.enabled === false) {
-    return { imagePaths: [], resourcePaths: [] };
+    return { imagePaths: [], resourcePaths: [], oversizedImages: [], failedImages: [] };
   }
   const mimePolicy = opts.mimePolicy ?? 'generic-image';
   const safe = resolveSafeProjectAttachments(cwd, attachments, opts);
-  if (!cwd || safe.length === 0) return { imagePaths: [], resourcePaths: [] };
+  if (!cwd || safe.length === 0) return { imagePaths: [], resourcePaths: [], oversizedImages: [], failedImages: [] };
   const pathImpl = opts.pathImpl ?? path;
   const root = pathImpl.resolve(cwd);
   const imagePaths: string[] = [];
@@ -1052,5 +1055,10 @@ export function resolveWebChatAttachmentsForAcp(
     imagePaths.push(abs);
   }
 
-  return { imagePaths, resourcePaths };
+  // Reuse native-image validation under the already guarded project root.
+  // Project attachment hints remain independent of native resource eligibility.
+  const { safeImages, oversizedImages, failedImages } = resolveSafePromptImagePaths(
+    imagePaths, { ...opts, uploadDir: root },
+  );
+  return { imagePaths: safeImages, resourcePaths, oversizedImages, failedImages };
 }

@@ -11311,24 +11311,6 @@ export async function startServer({
     }
     const { safeImages, oversizedImages, failedImages } =
       resolveSafePromptImagePaths(odNextTaskInputSnapshot ? [] : imagePaths);
-    if (oversizedImages.length > 0) {
-      return failRun(
-        'BAD_REQUEST',
-        'Image attachments must be 1 MB or smaller.',
-      );
-    }
-    if (failedImages.length > 0) {
-      return failRun(
-        'INTERNAL_ERROR',
-        'Failed to read one or more image attachments.',
-      );
-    }
-    const transportSourceImages = odNextTaskInputSnapshot?.imagePaths ?? safeImages;
-    const amrStagedImages =
-      def.id === 'amr' && !odNextTaskInputSnapshot
-        ? await stageAmrImagePaths(cwd ?? PROJECT_ROOT, safeImages, UPLOAD_DIR)
-        : transportSourceImages;
-
     // Project-scoped attachments: project-relative paths inside cwd. Each
     // is run through the same path-traversal guard the file CRUD endpoints
     // use, then existence-checked. Whatever survives shows up as an
@@ -11345,6 +11327,24 @@ export async function startServer({
         mimePolicy: def.acpResourceMimePolicy ?? 'generic-image',
       },
     );
+    if (oversizedImages.length > 0 || webChatAcpTransport.oversizedImages.length > 0) {
+      return failRun(
+        'BAD_REQUEST',
+        'Image attachments must be 1 MB or smaller.',
+      );
+    }
+    if (failedImages.length > 0 || webChatAcpTransport.failedImages.length > 0) {
+      return failRun(
+        'INTERNAL_ERROR',
+        'Failed to read one or more image attachments.',
+      );
+    }
+    const transportSourceImages = odNextTaskInputSnapshot?.imagePaths ?? safeImages;
+    const amrStagedImages =
+      def.id === 'amr' && !odNextTaskInputSnapshot
+        ? await stageAmrImagePaths(cwd ?? PROJECT_ROOT, safeImages, UPLOAD_DIR)
+        : transportSourceImages;
+
     run.projectAttachmentPaths = odNextTaskInputSnapshot
       ? odNextTaskInputSnapshot.attachmentReferences
       : safeAttachments;
@@ -15482,7 +15482,7 @@ export async function startServer({
             (runtimeResumesSessionById(def) || def.resumesSessionViaAcpLoad === true) &&
             !run.resumeAutoReseeded &&
             resolveAgentResumeFailurePolicy({
-              agentId: def.id,
+              agentId: def.resumeFailureAgentId ?? def.id,
               stderr: agentStderrTail,
               stdout: agentStdoutTail,
               isResuming: agentResumePromptPolicy.skipTranscript,
@@ -15847,7 +15847,7 @@ export async function startServer({
             def.resumesSessionViaAcpLoad === true &&
             !run.resumeAutoReseeded &&
             resolveAgentResumeFailurePolicy({
-              agentId: def.id,
+              agentId: def.resumeFailureAgentId ?? def.id,
               stderr: agentStderrTail,
               stdout: agentStdoutTail,
               isResuming: agentResumePromptPolicy.skipTranscript,
@@ -16271,7 +16271,7 @@ export async function startServer({
         (runtimeResumesSessionById(def) || def.resumesSessionViaAcpLoad === true) &&
         run.conversationId &&
         resolveAgentResumeFailurePolicy({
-          agentId: def.id,
+          agentId: def.resumeFailureAgentId ?? def.id,
           stderr: agentStderrTail,
           stdout: agentStdoutTail,
           isResuming: agentResumePromptPolicy.skipTranscript,

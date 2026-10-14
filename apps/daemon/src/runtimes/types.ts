@@ -283,6 +283,9 @@ export type RuntimeAgentDef = {
   // `capturesSessionIdFromStream` because the capture + resume transport is the
   // ACP result, not a `--session-id` flag or a stream `status` event.
   resumesSessionViaAcpLoad?: boolean;
+  // Derived profiles keep their own id for persistence and UI while using the
+  // base adapter's protocol-specific stale-session classifier.
+  resumeFailureAgentId?: string;
   // Standard ACP agents such as Kilo expose their persisted backing-session id
   // directly as `session/new.result.sessionId`. Bridges such as AMR instead
   // return a transient wrapper id plus a separate `openCodeSessionId`, so this
@@ -367,6 +370,7 @@ export type DetectedAgent = Omit<
   | 'acpImagePathFormat'
   | 'acpResourceMimePolicy'
   | 'acpSessionIdIsDurable'
+  | 'resumeFailureAgentId'
   // Runtime timeout fields are spawn-time-only hints consumed by chat-run
   // watchdogs. They are not part of the public `/api/agents`
   // contract (`packages/contracts/src/api/registry.ts#AgentInfo`), so

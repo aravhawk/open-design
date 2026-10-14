@@ -816,6 +816,7 @@ function stripFns(
     acpImagePathFormat,
     acpResourceMimePolicy,
     acpSessionIdIsDurable,
+    resumeFailureAgentId,
     encodeStdinPrompt,
     env,
     inactivityTimeoutMs,
