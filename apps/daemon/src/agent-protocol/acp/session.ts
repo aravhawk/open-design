@@ -156,6 +156,10 @@ export interface AttachAcpSessionOptions {
   stageTimeoutMs?: number;
   executionProfile?: ExecutionProfile;
   modelUnavailableErrorCode?: 'AMR_MODEL_UNAVAILABLE';
+  // AMR only: the catalog default to switch to, once, when the agent rejects
+  // the selected model (for example one that left the catalog). The agent's
+  // rejection is authoritative, so a stale local catalog never triggers it.
+  fallbackModel?: string | null;
   // Some ACP adapters expose an explicit `turn_end` session update as their
   // terminal turn signal instead of returning the pending session/prompt RPC.
   // Keep this opt-in so standard ACP adapters still require the response.
@@ -233,6 +237,7 @@ export function attachAcpSession({
   stageTimeoutMs = DEFAULT_STAGE_TIMEOUT_MS,
   executionProfile = 'filesystem',
   modelUnavailableErrorCode,
+  fallbackModel,
   completePromptOnTurnEnd = false,
   resumeSessionId,
   captureSessionIdAsDurable = false,
@@ -289,6 +294,10 @@ export function attachAcpSession({
   let continuationRecovery: AmrContinuationRecovery | null = null;
   let activeModel: string | null = null;
   let modelConfigId: string | null = null;
+  // The model this turn is asking the agent for; becomes fallbackModel after
+  // the selected one is rejected.
+  let selectedModel = model;
+  let usingFallbackModel = false;
   let emittedThinkingStart = false;
   let emittedFirstTokenStatus = false;
   let emittedTextChunk = false;
@@ -1037,6 +1046,22 @@ export function attachAcpSession({
     }
   };
 
+  const requestModelSelection = (modelId: string) => {
+    setModelRequestId = nextId;
+    expectedId = nextId;
+    const setModelMethod = modelConfigId ? 'session/set_config_option' : 'session/set_model';
+    const setModelParams = modelConfigId
+      ? { sessionId, configId: modelConfigId, value: modelId }
+      : { sessionId, modelId };
+    writeRpc(
+      nextId,
+      setModelMethod,
+      setModelParams,
+      setModelMethod,
+    );
+    nextId += 1;
+  };
+
   const recoverFromModelSelectionError = () => {
     setModelRequestId = null;
     activeModel = activeModel || 'default';
@@ -1064,7 +1089,8 @@ export function attachAcpSession({
       // -32603 unexpected-id errors are cleanup noise. Expected-id model
       // selection failures are recoverable for agents with an implicit
       // default. AMR/Vela requires an explicit selection before prompt, so a
-      // rejected model must stay terminal instead of creating a secondary
+      // rejected model switches once to the caller's fallback model, and
+      // otherwise stays terminal instead of creating a secondary
       // `session/set_model must be called before session/prompt` failure.
       if (
         obj.id === setModelRequestId &&
@@ -1072,6 +1098,13 @@ export function attachAcpSession({
         promptRequestId === null
       ) {
         if (modelUnavailableErrorCode) {
+          const fallback = typeof fallbackModel === 'string' ? fallbackModel.trim() : '';
+          if (!usingFallbackModel && fallback && fallback !== 'default' && fallback !== selectedModel) {
+            usingFallbackModel = true;
+            selectedModel = fallback;
+            requestModelSelection(fallback);
+            return;
+          }
           fail(rpcErr, { details: rpcErrorData(obj), retryable: false });
         } else {
           recoverFromModelSelectionError();
@@ -1479,19 +1512,7 @@ export function attachAcpSession({
           sendPrompt();
           return;
         }
-        setModelRequestId = nextId;
-        expectedId = nextId;
-        const setModelMethod = modelConfigId ? 'session/set_config_option' : 'session/set_model';
-        const setModelParams = modelConfigId
-          ? { sessionId, configId: modelConfigId, value: model }
-          : { sessionId, modelId: model };
-        writeRpc(
-          nextId,
-          setModelMethod,
-          setModelParams,
-          setModelMethod,
-        );
-        nextId += 1;
+        requestModelSelection(model);
         return;
       }
       if (!sessionId) {
@@ -1542,7 +1563,16 @@ export function attachAcpSession({
       return;
     }
     if (sessionId && model && model !== 'default' && obj.id === expectedId) {
-      activeModel = currentModelFromSessionResult(result) ?? model;
+      activeModel = currentModelFromSessionResult(result) ?? selectedModel ?? model;
+      if (usingFallbackModel) {
+        send('agent', {
+          type: 'status',
+          label: 'model_fallback',
+          detail: `${model} is no longer available in AMR. This turn uses ${activeModel}.`,
+          requestedModel: model,
+          model: activeModel,
+        });
+      }
       send('agent', { type: 'status', label: 'model', model: activeModel });
       sendPrompt();
     }
