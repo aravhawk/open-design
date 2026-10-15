@@ -11339,6 +11339,12 @@ export async function startServer({
         'Failed to read one or more image attachments.',
       );
     }
+    if (webChatAcpTransport.failedResources.length > 0) {
+      return failRun(
+        'INTERNAL_ERROR',
+        'Failed to read one or more project attachments.',
+      );
+    }
     const transportSourceImages = odNextTaskInputSnapshot?.imagePaths ?? safeImages;
     const amrStagedImages =
       def.id === 'amr' && !odNextTaskInputSnapshot

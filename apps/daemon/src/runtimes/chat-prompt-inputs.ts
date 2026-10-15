@@ -1012,6 +1012,7 @@ export interface WebChatAcpAttachmentTransport {
   resourcePaths: string[];
   oversizedImages: Array<{ path: string; sizeBytes: number }>;
   failedImages: Array<{ path: string; error: string }>;
+  failedResources: Array<{ path: string; error: string }>;
 }
 
 /**
@@ -1035,21 +1036,31 @@ export function resolveWebChatAttachmentsForAcp(
   } = {},
 ): WebChatAcpAttachmentTransport {
   if (opts.enabled === false) {
-    return { imagePaths: [], resourcePaths: [], oversizedImages: [], failedImages: [] };
+    return { imagePaths: [], resourcePaths: [], oversizedImages: [], failedImages: [], failedResources: [] };
   }
   const mimePolicy = opts.mimePolicy ?? 'generic-image';
   const safe = resolveSafeProjectAttachments(cwd, attachments, opts);
-  if (!cwd || safe.length === 0) return { imagePaths: [], resourcePaths: [], oversizedImages: [], failedImages: [] };
+  if (!cwd || safe.length === 0) return { imagePaths: [], resourcePaths: [], oversizedImages: [], failedImages: [], failedResources: [] };
   const pathImpl = opts.pathImpl ?? path;
   const root = pathImpl.resolve(cwd);
   const imagePaths: string[] = [];
   const resourcePaths: string[] = [];
+  const failedResources: Array<{ path: string; error: string }> = [];
+  const statSync = opts.statSync ?? fs.statSync;
 
   for (const attachment of safe) {
     const abs = pathImpl.resolve(root, attachment);
     if (mimePolicy === 'kilo') {
       if (isKiloAcpImageResource(abs)) imagePaths.push(abs);
-      else if (isKiloAcpResourceSupported(abs)) resourcePaths.push(abs);
+      else if (isKiloAcpResourceSupported(abs)) {
+        // Native PDF links require a regular file, just like native images.
+        // Their size remains governed by project upload limits, not the image cap.
+        try {
+          if (statSync(abs).isFile()) resourcePaths.push(abs);
+        } catch (error) {
+          failedResources.push({ path: abs, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
       continue;
     }
     imagePaths.push(abs);
@@ -1060,5 +1071,5 @@ export function resolveWebChatAttachmentsForAcp(
   const { safeImages, oversizedImages, failedImages } = resolveSafePromptImagePaths(
     imagePaths, { ...opts, uploadDir: root },
   );
-  return { imagePaths: safeImages, resourcePaths, oversizedImages, failedImages };
+  return { imagePaths: safeImages, resourcePaths, oversizedImages, failedImages, failedResources };
 }
