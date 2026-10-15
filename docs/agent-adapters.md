@@ -368,8 +368,13 @@ authentication, and the boundary between REST and MCP.
   `configOptions` does not re-send `session/set_model` or
   `session/set_config_option` — the durable session already has its model, and
   the legacy RPC is rejected. A stale load handle is cleared and transparently
-  reseeded with the full OpenDesign transcript only when the error is JSON-RPC
-  `-32603` with `data.service === "session"`.
+  reseeded with the full OpenDesign transcript only for Kilo's explicit
+  session-not-found response (`-32602`, `data.sessionId`, and a matching
+  `session not found` message). Kilo 7.4.23 reports SDK session/message read
+  failures, including missing handles, as the same generic `-32603` with
+  `data.service === "session"`. Those ambiguous failures remain visible and
+  retain the handle for a later retry; they cannot safely trigger automatic
+  reseeding.
 - Image attachments are forwarded as ACP `resource_link` blocks using
   absolute `file://` URLs with a Kilo-supported MIME type. Regular web chats
   send composer files as project-root `attachments` (not `imagePaths`); the

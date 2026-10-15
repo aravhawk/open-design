@@ -651,9 +651,34 @@ describe('isKiloAcpLoadFailure', () => {
   it('matches an ACP error response for the session/load request id', () => {
     expect(
       isKiloAcpLoadFailure(
-        '{"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"Internal error: OpenCode service failure","data":{"service":"session"}}}',
+        '{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"session not found: ses_missing","data":{"sessionId":"ses_missing"}}}',
       ),
     ).toBe(true);
+  });
+
+  it('preserves a live handle after an ambiguous session or message read failure', () => {
+    const stdout = JSON.stringify({ jsonrpc: '2.0', id: 2, error: {
+      code: -32603, message: 'Internal error: OpenCode service failure', data: { service: 'session' },
+    } });
+    expect(isKiloAcpLoadFailure(stdout)).toBe(false);
+    const policy = resolveAgentResumeFailurePolicy({
+      agentId: 'kilo', stderr: '', stdout,
+      isResuming: true, resumeSessionId: 'ses_live_but_messages_unreadable',
+    });
+    expect(policy.clearStaleSession).toBe(false);
+    expect(policy.autoReseedFullTranscript).toBe(false);
+  });
+
+  it('requires the explicit missing-session message and matching structured id', () => {
+    for (const error of [
+      { code: -32602, message: 'Invalid params', data: { sessionId: 'ses_live' } },
+      { code: -32602, message: 'session not found: ses_missing' },
+      { code: -32602, message: 'session not found: ses_other', data: { sessionId: 'ses_live' } },
+      { code: -32603, message: 'session not found: ses_missing', data: { sessionId: 'ses_missing' } },
+    ]) expect(isKiloAcpLoadFailure(JSON.stringify({ id: 2, error }))).toBe(false);
+    expect(isKiloAcpLoadFailure(JSON.stringify({ id: 2, error: {
+      code: -32602, message: 'Invalid params: session not found: ses_missing', data: { sessionId: 'ses_missing' },
+    } }))).toBe(true);
   });
 
   it('ignores non-session id-2 errors so auth and invalid-params stay visible', () => {
@@ -781,7 +806,7 @@ describe('isAgentResumeFailure dispatch', () => {
 
   it('routes Kilo to the structured ACP session/load detector on stdout', () => {
     const loadError =
-      '{"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"Internal error: OpenCode service failure","data":{"service":"session"}}}';
+      '{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"session not found: ses_missing","data":{"sessionId":"ses_missing"}}}';
     expect(isAgentResumeFailure('kilo', '', loadError)).toBe(true);
     expect(isAgentResumeFailure('kilo', loadError, '')).toBe(false);
     expect(

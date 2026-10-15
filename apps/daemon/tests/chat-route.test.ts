@@ -1223,6 +1223,69 @@ process.exit(1);
     );
   });
 
+  it('keeps a live Kilo session after an ambiguous session-load error', async () => {
+    const projectId = `kilo-session-error-${randomUUID()}`;
+    const created = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: projectId, name: 'Kilo session error fixture' }),
+    });
+    expect(created.ok).toBe(true);
+    const conversations = await fetch(`${baseUrl}/api/projects/${projectId}/conversations`);
+    const { conversations: rows } = await conversations.json() as { conversations: Array<{ id: string }> };
+    const conversationId = rows[0]?.id;
+    expect(conversationId).toBeTruthy();
+    const dir = await fsp.mkdtemp(join(tmpdir(), 'od-kilo-session-error-'));
+    tempDirs.push(dir);
+    const logPath = join(dir, 'calls.jsonl');
+    await withFakeAgent('kilo', `
+const fs = require('node:fs');
+const readline = require('node:readline');
+const logPath = ${JSON.stringify(logPath)};
+const write = (frame) => console.log(JSON.stringify({ jsonrpc: '2.0', ...frame }));
+if (process.argv.includes('--version')) { console.log('7.4.23'); process.exit(0); }
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const request = JSON.parse(line);
+  if (request.method === 'initialize') write({ id: request.id, result: { protocolVersion: 1 } });
+  if (request.method === 'session/new' || request.method === 'session/load') {
+    const previous = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse) : [];
+    fs.appendFileSync(logPath, JSON.stringify({ method: request.method, sessionId: request.params.sessionId }) + '\\n');
+    if (request.method === 'session/load' && !previous.some((entry) => entry.method === 'session/load')) {
+      // A live session whose messages cannot be read has the same generic
+      // payload as a missing session in Kilo 7.4.23.
+      write({ id: request.id, error: { code: -32603, message: 'OpenCode service failure', data: { service: 'session' } } });
+    } else write({ id: request.id, result: { sessionId: 'ses_kilo_live', configOptions: [] } });
+  }
+  if (request.method === 'session/prompt') {
+    write({ method: 'session/update', params: { sessionId: 'ses_kilo_live', update: {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Kilo current reply' },
+    } } });
+    write({ id: request.id, result: { stopReason: 'end_turn' } });
+  }
+});
+`, async () => {
+      const sendTurn = async (message: string) => {
+        const response = await fetch(`${baseUrl}/api/chat`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agentId: 'kilo', projectId, conversationId, message }),
+        });
+        expect(response.ok).toBe(true);
+        return response.text();
+      };
+      expect(await sendTurn('first request')).toContain('Kilo current reply');
+      const failed = await sendTurn('second request');
+      expect(failed).toContain('OpenCode service failure');
+      expect(failed).toContain('event: error');
+      expect(failed).not.toContain('Kilo current reply');
+      expect(await sendTurn('retry second request')).toContain('Kilo current reply');
+      const calls = (await fsp.readFile(logPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+      expect(calls).toEqual([
+        { method: 'session/new' },
+        { method: 'session/load', sessionId: 'ses_kilo_live' },
+        { method: 'session/load', sessionId: 'ses_kilo_live' },
+      ]);
+    });
+  });
+
   it('rejects oversized converted Kilo web-chat images before ACP launch', async () => {
     if (!process.env.OD_DATA_DIR) throw new Error('OD_DATA_DIR is required for image attachment tests');
     const projectId = `kilo-image-cap-${randomUUID()}`;

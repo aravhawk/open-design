@@ -470,13 +470,11 @@ export function isOpencodeResumeFailure(text: string): boolean {
 }
 
 /**
- * Kilo's ACP resume handshake always assigns request id 2 to `session/load`.
- * Its current missing-session response is a JSON-RPC `-32603` with structured
- * session-service data (`data.service === "session"`). The request id alone is
- * not enough: invalid-params, auth, and other load errors also use id 2, and
- * treating those as a stale session would clear a live handle and auto-reseed.
- * The caller only invokes this classifier after proving the run attempted
- * resume, which keeps a create-turn `session/new` error out.
+ * Kilo's ACP resume handshake assigns request id 2 to `session/load`.
+ * Only an explicit SessionNotFoundError may discard a stored handle. Kilo
+ * 7.4.23 also reports ordinary session/message read failures as -32603 with
+ * data.service=session, so that generic payload cannot prove the handle stale.
+ * The caller first proves this run attempted resume, excluding create errors.
  */
 export function isKiloAcpLoadFailure(stdout: string): boolean {
   if (!stdout) return false;
@@ -497,18 +495,17 @@ export function isKiloAcpLoadFailure(stdout: string): boolean {
   return false;
 }
 
-/**
- * True when an ACP JSON-RPC error is Kilo's measured missing-session payload:
- * code `-32603` plus structured session-service data. Does not match on the
- * mutable OpenCode prose alone.
- */
+/** Matches Kilo's typed SessionNotFoundError, not its generic service failure. */
 function isKiloMissingSessionRpcError(error: unknown): boolean {
   if (error === null || typeof error !== 'object') return false;
-  const payload = error as { code?: unknown; data?: unknown };
-  if (payload.code !== -32603) return false;
+  const payload = error as { code?: unknown; data?: unknown; message?: unknown };
+  if (payload.code !== -32602 || typeof payload.message !== 'string') return false;
   const data = payload.data;
   if (data === null || typeof data !== 'object') return false;
-  return (data as { service?: unknown }).service === 'session';
+  const sessionId = (data as { sessionId?: unknown }).sessionId;
+  if (typeof sessionId !== 'string' || !sessionId.trim()) return false;
+  const missing = /(?:^|:\s*)session not found:\s*(.+)$/i.exec(payload.message);
+  return missing?.[1]?.trim() === sessionId;
 }
 
 /**

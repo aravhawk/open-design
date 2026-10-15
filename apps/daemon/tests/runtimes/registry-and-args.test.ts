@@ -89,7 +89,7 @@ test('local profiles preserve base resume classification and customization', asy
       process.env.OD_AGENT_PROFILES_CONFIG = config;
       const profiles = readLocalAgentProfileDefs();
       const kiloError = JSON.stringify({ jsonrpc: '2.0', id: 2, error: {
-        code: -32603, data: { service: 'session' },
+        code: -32602, message: 'session not found: stale', data: { sessionId: 'stale' },
       } });
       for (const profile of profiles) {
         const baseId = profile.id.replace('local-', '');
@@ -113,6 +113,7 @@ test('local profiles preserve base resume classification and customization', asy
             { stdout: JSON.stringify({ id: 2, error: { code: -32603, data: { service: 'model' } } }) },
             { stdout: JSON.stringify({ id: 3, error: { code: -32603, data: { service: 'session' } } }) },
             { stdout: JSON.stringify({ id: 2, error: { code: -32602, data: { service: 'session' } } }) },
+            { stdout: JSON.stringify({ id: 2, error: { code: -32603, data: { service: 'session' } } }) },
             { stdout: 'Session not found' },
           ]) assert.equal(resolveAgentResumeFailurePolicy({ ...input, ...override }).resumeFailed, false);
         }
